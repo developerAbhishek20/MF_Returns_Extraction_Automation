@@ -1,0 +1,193 @@
+import os
+import zipfile
+import pandas as pd
+from io import BytesIO
+import time
+
+# =====================================================
+# CONFIGURATION
+# =====================================================
+
+INPUT_FOLDER = r"C:\Users\asalvi\OneDrive - MORNINGSTAR INC\Documents\Automation Python\Raw Zip File"
+OUTPUT_FOLDER = r"C:\Users\asalvi\OneDrive - MORNINGSTAR INC\Documents\Automation Python\Updated Excel File"
+OUTPUT_FILE = os.path.join(OUTPUT_FOLDER, "Consolidated_Output.xlsx")
+
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+# Small delay for OneDrive sync safety
+time.sleep(3)
+
+# =====================================================
+# HELPER FUNCTIONS
+# =====================================================
+
+def clean_text(value):
+    """Standardize text for comparison"""
+    return str(value).strip().lower().replace(":", "")
+
+
+def find_label_value(df, label_text):
+    """Find value next to label (right or below)"""
+    label_text = clean_text(label_text)
+
+    for r in range(df.shape[0]):
+        for c in range(df.shape[1]):
+
+            cell_value = clean_text(df.iat[r, c])
+
+            if label_text in cell_value:
+
+                # Check right cell
+                if c + 1 < df.shape[1]:
+                    right_val = df.iat[r, c + 1]
+                    if pd.notna(right_val) and str(right_val).strip() != "":
+                        return right_val
+
+                # Check below cell
+                if r + 1 < df.shape[0]:
+                    below_val = df.iat[r + 1, c]
+                    if pd.notna(below_val) and str(below_val).strip() != "":
+                        return below_val
+
+    return None
+
+
+def find_total_portfolio_value(df):
+    """Find Total Portfolio value under Portfolio column"""
+
+    portfolio_col = None
+    total_row = None
+
+    # Find Portfolio column
+    for r in range(df.shape[0]):
+        for c in range(df.shape[1]):
+            if "portfolio" in clean_text(df.iat[r, c]):
+                portfolio_col = c
+                break
+        if portfolio_col is not None:
+            break
+
+    if portfolio_col is None:
+        return None
+
+    # Find Total Portfolio row
+    for r in range(df.shape[0]):
+        for c in range(df.shape[1]):
+            if "total portfolio" in clean_text(df.iat[r, c]):
+                total_row = r
+                break
+        if total_row is not None:
+            break
+
+    if total_row is not None:
+        value = df.iat[total_row, portfolio_col]
+
+        if pd.notna(value):
+            try:
+                # Convert decimal to actual value
+                return round(float(value) * 100, 2)
+            except:
+                return value
+
+    return None
+
+
+# =====================================================
+# MAIN PROCESS
+# =====================================================
+
+results = []
+
+zip_files = [f for f in os.listdir(INPUT_FOLDER) if f.lower().endswith(".zip")]
+
+if not zip_files:
+    print("❌ No ZIP files found in input folder.")
+else:
+    print("ZIP files detected:", zip_files)
+
+for file in zip_files:
+
+    zip_path = os.path.join(INPUT_FOLDER, file)
+    print(f"\nProcessing ZIP: {file}")
+
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+
+            excel_files = [f for f in zip_ref.namelist()
+                           if f.lower().endswith((".xlsx", ".xls"))]
+
+            if not excel_files:
+                print("   ❌ No Excel files inside ZIP.")
+                continue
+
+            for inner_file in excel_files:
+
+                try:
+                    print(f"   Reading Excel: {inner_file}")
+
+                    file_data = zip_ref.read(inner_file)
+                    excel_bytes = BytesIO(file_data)
+
+                    xl = pd.ExcelFile(excel_bytes, engine="openpyxl")
+
+                    # Flexible Survey sheet detection
+                    survey_sheet = None
+                    for sheet in xl.sheet_names:
+                        if "survey" in clean_text(sheet):
+                            survey_sheet = sheet
+                            break
+
+                    if survey_sheet is None:
+                        print("   ❌ Survey sheet not found.")
+                        continue
+
+                    df = pd.read_excel(
+                        excel_bytes,
+                        sheet_name=survey_sheet,
+                        header=None,
+                        engine="openpyxl"
+                    )
+
+                    fund_name = find_label_value(df, "fund name")
+                    month = find_label_value(df, "month")
+                    total_portfolio = find_total_portfolio_value(df)
+
+                    print("      Fund Name:", fund_name)
+                    print("      Month:", month)
+                    print("      Total Portfolio:", total_portfolio)
+
+                    if fund_name and month and total_portfolio is not None:
+
+                        results.append({
+                            "ZIP File": file,
+                            "Excel File": inner_file,
+                            "Fund Name": fund_name,
+                            "Month": month,
+                            "Total Portfolio Value": total_portfolio
+                        })
+
+                        print("   ✅ Data Extracted Successfully")
+
+                    else:
+                        print("   ⚠ Required data missing.")
+
+                except Exception as e:
+                    print(f"   ❌ Error processing {inner_file}: {e}")
+
+    except Exception as e:
+        print(f"❌ Error opening ZIP {file}: {e}")
+
+
+# =====================================================
+# SAVE OUTPUT
+# =====================================================
+
+if results:
+
+    final_df = pd.DataFrame(results)
+    final_df.to_excel(OUTPUT_FILE, index=False, float_format="%.2f")
+
+    print(f"\n✅ Output saved successfully at:\n{OUTPUT_FILE}")
+
+else:
+    print("\n⚠ No valid data extracted.")
